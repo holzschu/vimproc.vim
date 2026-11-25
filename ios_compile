@@ -1,4 +1,82 @@
-clang -arch arm64 -miphoneos-version-min=10.0 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk -O2 -W -Wall -Wno-unused -Wno-unused-parameter -I . src/proc.c -fembed-bitcode -fPIC -dynamiclib -o vimproc_ios.dylib -F Frameworks -framework ios_system
+#!/bin/bash
+set -euo pipefail
 
-install_name_tool -id vimproc_ios.dylib vimproc_ios.dylib
-install_name_tool -id @executable_path/Frameworks/vimproc_ios.dylib vimproc_ios.dylib
+root=$(cd "$(dirname "$0")" && pwd)
+cd "$root"
+build="$root/.build"
+mkdir -p "$build/inputs"
+curl --fail --location --retry 3 -o "$build/inputs/ios_system.zip" https://github.com/holzschu/ios_system/releases/download/v3.0.5/ios_system.xcframework.zip
+curl --fail --location --retry 3 -o "$build/inputs/ios_error.h" https://github.com/holzschu/ios_system/releases/download/v3.0.5/ios_error.h
+curl --fail --location --retry 3 -o "$build/inputs/published-vimproc.zip" https://github.com/holzschu/ios_system/releases/download/Auxiliary/vimproc.xcframework.zip
+(
+    cd "$build/inputs"
+    shasum -a 256 -c - <<'SUMS'
+d429e68102926f58bedd8e8b7105dcd169478cd6da1cef494a5f468482d1c8f5  ios_system.zip
+51d46b912eb30399cbb5c36c8c8f15eb1a44adcfc9ee581304ac9d3739a84716  ios_error.h
+400dcf3f4414562a9c62f1541b349be4176bdae9f7fcd95a5c7ed34046586982  published-vimproc.zip
+SUMS
+    rm -rf ios_system.xcframework published
+    unzip -q ios_system.zip
+    unzip -q published-vimproc.zip -d published
+)
+baseline="$build/inputs/published/vimproc.xcframework/ios-arm64/vimproc.framework/vimproc"
+xcrun nm -arch arm64 -gjU "$baseline" | LC_ALL=C sort -u > "$build/published-exports.txt"
+
+for target in arm64-apple-ios14.0 arm64-apple-ios14.0-simulator x86_64-apple-ios14.0-simulator; do
+    arch=${target%%-*}
+    sdk=iphonesimulator
+    slice=ios-arm64_x86_64-simulator
+    platform=iPhoneSimulator
+    if [[ $target == arm64-apple-ios14.0 ]]; then
+        sdk=iphoneos
+        slice=ios-arm64
+        platform=iPhoneOS
+    fi
+    framework="$build/$target/vimproc.framework"
+    rm -rf "$framework"
+    mkdir -p "$framework"
+    xcrun --sdk "$sdk" clang -target "$target" -isysroot "$(xcrun --sdk "$sdk" --show-sdk-path)" \
+        -O2 -W -Wall -Wno-unused -Wno-unused-parameter -D_DARWIN_C_SOURCE=1 \
+        -I "$build/inputs" -fPIC -dynamiclib src/proc.c \
+        -F "$build/inputs/ios_system.xcframework/$slice" -framework ios_system \
+        -Wl,-install_name,@rpath/vimproc.framework/vimproc -o "$framework/vimproc"
+    cat > "$framework/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>vimproc</string>
+<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+<key>CFBundleIdentifier</key><string>Nicolas-Holzschuch.vimproc</string>
+<key>CFBundleName</key><string>vimproc</string>
+<key>CFBundlePackageType</key><string>FMWK</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleSupportedPlatforms</key><array><string>$platform</string></array>
+<key>MinimumOSVersion</key><string>14.0</string>
+<key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+</dict></plist>
+PLIST
+    plutil -lint "$framework/Info.plist"
+    xcrun nm -arch "$arch" -gjU "$framework/vimproc" | LC_ALL=C sort -u > "$build/$target.exports.txt"
+    diff -u "$build/published-exports.txt" "$build/$target.exports.txt"
+done
+
+rm -rf "$build/simulator" "$build/vimproc.xcframework"
+mkdir -p "$build/simulator"
+cp -R "$build/arm64-apple-ios14.0-simulator/vimproc.framework" "$build/simulator/"
+xcrun lipo -create "$build/arm64-apple-ios14.0-simulator/vimproc.framework/vimproc" \
+    "$build/x86_64-apple-ios14.0-simulator/vimproc.framework/vimproc" \
+    -output "$build/simulator/vimproc.framework/vimproc"
+xcodebuild -create-xcframework -framework "$build/arm64-apple-ios14.0/vimproc.framework" \
+    -framework "$build/simulator/vimproc.framework" -output "$build/vimproc.xcframework"
+rm -f "$build/vimproc.xcframework.zip"
+(
+    cd "$build"
+    zip -rq vimproc.xcframework.zip vimproc.xcframework
+)
+cp "$build/arm64-apple-ios14.0/vimproc.framework/vimproc" vimproc_ios.dylib
+xcrun install_name_tool -id @executable_path/Frameworks/vimproc_ios.dylib vimproc_ios.dylib
+bash ci/audit-exports.sh "$build/vimproc.xcframework.zip" "$build/inputs/published-vimproc.zip" | tee "$build/vimproc.exports-audit.txt"
+sum=$(swift package compute-checksum "$build/vimproc.xcframework.zip")
+printf '%s  vimproc.xcframework.zip\n' "$sum" > "$build/checksums.txt"
+uv run --script "$root/ci/audit-artifact.py" "$build/vimproc.xcframework.zip" --sha256 "$sum" --max-minos 14.0 > "$build/vimproc.audit.json"

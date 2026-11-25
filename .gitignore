@@ -6,3 +6,5 @@ doc/tags
 *.dll
 *.swp
 *~
+.build/
+vimproc_ios.dylib
