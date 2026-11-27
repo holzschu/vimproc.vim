@@ -99,12 +99,13 @@ Note: You must use GNU make to build vimproc.
 You can install the dll using |VimProcInstall|. If you are having any trouble
 or want to build manually then read on.
 
-### iOS 
+### iOS
 
-    $ sh ./get_frameworks.sh
-    $ sh ./ios_compile
+With Xcode and uv installed, run `nice -n 15 bash ios_compile`. The recipe downloads checksum-pinned inputs and builds `vimproc.xcframework.zip` under `.build` for arm64 iOS and arm64/x86_64 Simulator, with a minimum OS of iOS 14. It compares every architecture's exports with the published Auxiliary framework. `get_frameworks.sh` is not needed for this build.
 
-Then add `vimproc_ios.dylib` to the Embedded Binaries of iVim. 
+For iVim, add the generated `vimproc_ios.dylib` (arm64, minimum iOS 14) to Embedded Binaries. Both outputs are built against ios_system v3.0.5.
+
+Pull requests and manual workflow runs upload the audited ZIP and `checksums.txt`.
 
 ### Linux
 

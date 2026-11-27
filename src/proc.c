@@ -529,7 +529,7 @@ static void cleanup_function(void* parameters) {
 }
 
 
-static void start_command(void* parameters) {
+static void *start_command(void* parameters) {
     commandParameters* p = (commandParameters*) parameters;
     dup2(p->fd_in, STDIN_FILENO);
     dup2(p->fd_out, STDOUT_FILENO);
@@ -540,6 +540,7 @@ static void start_command(void* parameters) {
     pthread_cleanup_push(cleanup_function, parameters);
     ios_execv(p->argv[0], p->argv); 
     pthread_cleanup_pop(1);
+    return NULL;
 }
 
 
